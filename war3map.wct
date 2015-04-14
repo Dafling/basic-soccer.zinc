@@ -1,0 +1,543 @@
+globals
+    group array TeamHeroes
+    hero array Heroes
+endglobals
+
+//! zinc
+library Globals requires Common
+{
+    public
+    {
+        constant integer HeroHeight = 100;
+        constant real G             = 2.3;
+        
+        struct hero
+        {
+            private unit h          = null;
+            
+            boolean IsInAir         = false;
+            integer SlowDownTime    = 0;
+            integer CantHoldBall    = 0;
+            real VZ                 = 0.0;
+            
+            method getunit() -> unit {
+                return this.h;
+            }
+            
+            method setflyheight(real h) {
+                SetUnitFlyHeight(this.h, h, 0.0);
+            }
+            
+            method getflyheight() -> real {
+                return GetUnitFlyHeight(this.h);
+            }
+            
+            method init(player p) {
+                location loc_player = GetRandomLocInRect(gg_rct_LeftTeamStay);
+                unit u = CreateUnitAtLoc( p, 'H001', loc_player, 0 );
+                GroupAddUnit( TeamHeroes[1], u );
+                SetHeroLevel( u, 10, false );
+                
+                this.h = u;
+                Heroes[cPid(p)] = this;
+            }
+            
+        }
+    }
+    
+    function onInit()
+    {
+        TeamHeroes[1] = CreateGroup();
+        TeamHeroes[2] = CreateGroup();
+    }
+}
+
+library Common
+{
+    public
+    {
+        function cPid(player p) -> integer {
+            return GetConvertedPlayerId(p);
+        }
+        function IsFilterUnitHero() -> boolean {
+            integer pid = cPid(GetOwningPlayer(GetFilterUnit()));
+            return GetFilterUnit() == Heroes[pid].getunit();
+        }
+        function FilterPlayerStatePlaying() -> boolean {
+            return GetPlayerSlotState(GetFilterPlayer()) == PLAYER_SLOT_STATE_PLAYING;
+        }
+        function echo(string s) {
+            DisplayTextToForce(GetPlayersAll(),s);
+        }
+        function p_echo(player p, string s) {
+            DisplayTextToPlayer(p,0,0,s);
+        }
+    }
+}
+//! endzinc
+
+//! zinc
+library Core requires Flag
+{
+    private boolean Interval_001_Execution = false;
+    
+    constant real GROUND_HIT_FACTOR         = 50;
+    constant real GROUND_FRICTION_FACTOR    = 10;
+    
+    function Get_Ball() {
+        player p = Ball_GetPlayerOwner();
+        integer pid = cPid(p);
+        
+        if ( Ball_Owner != null ) {
+            p_echo( p, "TRIGSTR_298" );
+            Heroes[pid].CantHoldBall = 15;
+        }
+        
+        Ball_Owner = GetEnumUnit();
+        p_echo( Ball_GetPlayerOwner(), "TRIGSTR_295" );
+        
+        Ball_ReduceSpeedBy(1000);
+        Ball_SetScale(350);
+    }
+
+    function CanUnitHeadBall(unit u) -> boolean {
+        integer pid = cPid(GetOwningPlayer(u));
+        hero h = Heroes[pid];
+        
+        boolean b1 = h.IsInAir;
+        boolean b2 = h.VZ >= 0;
+        
+        return b1 && b2;
+    }
+
+    function CanUnitGetBall(unit u) -> boolean {
+        integer pid = cPid(GetOwningPlayer(u));
+        real ball_h = Ball_GetHeight();
+        real unit_h = GetUnitFlyHeight(u);
+        
+        boolean b1 = Ball_ImmuneTimer <= 0;
+        boolean b2 = Heroes[pid].CantHoldBall <= 0;
+        boolean b3 = u != Ball_Owner;
+        boolean b4 = (ball_h >= unit_h) && (ball_h <= unit_h + HeroHeight);
+        boolean b5 = IsUnitEnemy(u, Ball_GetPlayerOwner());
+        
+        return b1 && b2 && b3 && b4 && b5;
+    }
+
+    function Set_Ball_Owner() {
+        conditionfunc cond = Condition(function IsFilterUnitHero);
+        group g = GetUnitsInRangeOfLocMatching(100, Ball_GetLoc(), cond);
+        
+        ForGroup( g, function() {
+            unit u = GetEnumUnit();
+            integer pid = cPid(GetOwningPlayer(u));
+
+            if (CanUnitGetBall(u)) {
+                if (!CanUnitHeadBall(u)) {
+                    Flag_Hide();
+                    if (!Interval_001_Execution && Heroes[pid].SlowDownTime == 0)
+                        Get_Ball();
+                }
+            }
+        });
+    }
+    
+    function Vertical_Animations() {
+        boolean b1 = Ball_VZ < 0;
+        boolean b2 = Ball_GetHeight() <= Ball_DefaultHeight;
+        
+        //Ball_HitsGround()
+        if ( b1 && b2 ) {
+            //BallHitsGround_Actions()
+            Ball_ReduceSpeedBy(GROUND_HIT_FACTOR);
+            Ball_ResetHeight();
+            
+            if ( RAbsBJ(Ball_VZ) < G*5.0 ) {
+                Flag_Hide();
+                Ball_IsInAir = false;
+                Ball_VZ = 0;
+            } else
+                Ball_VZ *= (-0.6);
+        } else {
+            // Ball_UpdateHeight()
+            Ball_SetHeight( Ball_GetHeight() + Ball_VZ );
+            Ball_VZ -= G;
+        }
+        
+        Flag_Move();
+    }
+    
+    public function Horizontal_Animations() {
+        location loc_ball_new = PolarProjectionBJ( Ball_GetLoc(), 100, Ball_Direction);
+
+        if ( Ball_GetSpeed() <= Ball_MinimumSpeed ) {
+            Ball_Stop();
+            Ball_ReduceSpeedBy( 1000 );
+            Ball_SetScale( 0 );
+            Ball_CurrentSpeed = 0.0;
+        } else {
+            Ball_SetScale( 1.5 * Ball_GetSpeed() );
+            Ball_Move(loc_ball_new);
+        }
+    }
+    
+    function Ball_PlaceInFrontOfOwner() {
+        location loc_owner = GetUnitLoc(Ball_Owner);
+        real facing = GetUnitFacing(Ball_Owner);
+        location loc_ball_new = PolarProjectionBJ( loc_owner, 50, facing);
+        
+        Ball_SetLoc( loc_ball_new );
+        Ball_SetFacing( facing );
+        Ball_SetHeight( GetUnitFlyHeight(Ball_Owner) + Ball_DefaultHeight );
+    }
+    
+    function Ball_Timer_Actions() {
+        conditionfunc cond = Condition(function FilterPlayerStatePlaying);
+        force f = GetPlayersMatching(cond);
+        ForForce( f, function() {
+            integer pid = cPid(GetEnumPlayer());
+            hero h = Heroes[pid];
+            h.CantHoldBall = IMaxBJ(0, h.CantHoldBall-1);
+        });
+        
+        if ( Ball_Owner == null ) {
+            Horizontal_Animations();
+            
+            if ( Ball_IsInAir )
+                Vertical_Animations();
+            else
+                Ball_ReduceSpeedBy(GROUND_FRICTION_FACTOR);
+        } else
+            Ball_PlaceInFrontOfOwner();
+    }
+
+    function Periodic_Jump_Actions() {
+        group g = CreateGroup();
+        GroupAddGroup(TeamHeroes[1], g);
+        GroupAddGroup(TeamHeroes[2], g);
+        
+        ForGroup(g, function() {
+            unit u = GetEnumUnit();
+            integer pid = cPid(GetOwningPlayer(u));
+            hero h = Heroes[pid];
+            
+            if ( h.IsInAir ) {
+                h.setflyheight( h.getflyheight() + h.VZ );
+                h.VZ -= G;
+                
+                if ( h.getflyheight() <= 0.01 ) {
+                    h.IsInAir = false;
+                    h.setflyheight(0);
+                    h.VZ = 0;
+                }
+            }
+        });
+    }
+    
+    public function Players_Update_Speed() {
+        conditionfunc cond = Condition(function IsFilterUnitHero);
+        group g = GetUnitsInRectMatching(GetPlayableMapRect(), cond);
+        ForGroup( g, function() { 
+            unit u = GetEnumUnit();
+            integer pid = cPid(GetOwningPlayer(u));
+            hero h = Heroes[pid];
+            
+            if (h.SlowDownTime == 0) {
+                if ( u == Ball_Owner )
+                    SetUnitMoveSpeed( u, 200);
+                else
+                    SetUnitMoveSpeed( u, 290);
+            } else {
+                h.SlowDownTime -= 1;
+                SetUnitMoveSpeed(u, 0.5*290);
+            }
+        } );
+    }
+    
+    function Timer_Interval_01_Actions() {
+        Ball_Timer_Actions();
+        Set_Ball_Owner();
+        Ball_ImmuneTimer = IMaxBJ(0, Ball_ImmuneTimer-1);
+        Players_Update_Speed();
+        Periodic_Jump_Actions();
+    }
+    
+    function Timer_Interval_001_Actions() {
+        Interval_001_Execution = true;
+        Set_Ball_Owner();
+        Interval_001_Execution = false;
+    }
+    
+    function onInit() {
+        trigger t = CreateTrigger();
+        TriggerRegisterTimerEventPeriodic( t, 0.01 );
+        TriggerAddAction( t, function Timer_Interval_001_Actions );
+        
+        t = CreateTrigger();
+        TriggerRegisterTimerEventPeriodic( t, 0.1 );
+        TriggerAddAction( t, function Timer_Interval_01_Actions );
+    }
+    
+}
+//! endzinc
+
+//! zinc
+library Abils requires Core
+{
+    constant integer ABILITY_SHORT_PASS     = 'A007';
+    constant integer ABILITY_KICK           = 'A00K';
+    constant integer ABILITY_LONG_PASS      = 'A008';
+    constant integer ABILITY_JUMP           = 'A009';
+    
+    function Shot_Common_Actions() {
+        integer pid = cPid(Ball_GetPlayerOwner());
+        
+        Ball_SetSpeed(Ball_CurrentSpeed);
+        Heroes[pid].CantHoldBall = 10;
+        Ball_Owner = null;
+        Players_Update_Speed();
+        Horizontal_Animations();
+    }
+    
+    function Z_Actions() {
+        unit u = GetTriggerUnit();
+        integer pid = cPid(GetTriggerPlayer());
+        
+        if (Ball_Owner != u)
+            return;
+        
+        if (Heroes[pid].IsInAir) {
+            // V+Z
+            Ball_VZ = 0;
+            Ball_IsInAir = true;
+            Ball_Direction = GetUnitFacing(Ball_Owner);
+            Ball_ImmuneTimer = 7;
+            Ball_CurrentSpeed = 522;
+        }
+        
+        Shot_Common_Actions();
+    }
+    
+    function X_Actions() {
+        unit u = GetTriggerUnit();
+        location loc_target = GetSpellTargetLoc();
+        
+        if ( Ball_Owner == u ) {
+            Ball_ImmuneTimer = 7;
+            Flag_Show();
+            Ball_VZ = 20;
+            Ball_IsInAir = true;
+            Ball_Direction = AngleBetweenPoints(Ball_GetLoc(), loc_target);
+            Ball_CurrentSpeed = 362;
+            
+            Shot_Common_Actions();
+        }
+        
+        IssueImmediateOrder(u, "stop");
+        SetUnitFacing(u, AngleBetweenPoints(GetUnitLoc(u), loc_target));
+    }
+    
+    function C_Actions() {
+        unit u = GetTriggerUnit();
+        integer pid = cPid(GetTriggerPlayer());
+        real tr, dist;
+        hero h = Heroes[pid];
+        
+        if (h.IsInAir || u != Ball_Owner)
+            return;
+        
+        h.SlowDownTime = 10;
+        
+        Ball_Direction = AngleBetweenPoints( Ball_GetLoc(), GetSpellTargetLoc() );
+        Ball_ResetHeight();
+        Ball_IsInAir = true;
+        Ball_ImmuneTimer = 7;
+        
+        // calculate C horizontal and vertical speed
+        tr = 37.2;
+        dist = DistanceBetweenPoints(Ball_GetLoc(), GetSpellTargetLoc());
+        Ball_VZ = RMinBJ(30, RMaxBJ(30, G * dist * 0.5 / tr));
+        tr = G * dist * 0.5 / Ball_VZ;
+        Ball_CurrentSpeed = 10*tr;
+        
+        Shot_Common_Actions();
+        
+        Flag_Show();
+    }
+    
+    function V_Actions() {
+        unit u = GetTriggerUnit();
+        integer pid = cPid(GetTriggerPlayer());
+        hero h = Heroes[pid];
+        
+        if (h.IsInAir || h.SlowDownTime > 0)
+            return;
+        
+        h.IsInAir = true;
+        
+        if ( Ball_Owner != u )
+            h.VZ = 20;
+        else {
+            h.VZ = 15;
+            PolledWait( 2 );
+            UnitRemoveAbility( u, 'Bowk' );
+        }
+    }
+    
+    function AbilityCast() {
+        integer sid = GetSpellAbilityId();
+        
+        if (sid == ABILITY_SHORT_PASS)
+            Z_Actions();
+        else if (sid == ABILITY_KICK)
+            X_Actions();
+        else if (sid == ABILITY_LONG_PASS)
+            C_Actions();
+        else if (sid == ABILITY_JUMP)
+            V_Actions();
+    }
+
+    function onInit() {
+        trigger t = CreateTrigger(  );
+        TriggerRegisterAnyUnitEventBJ( t, EVENT_PLAYER_UNIT_SPELL_CAST );
+        TriggerAddAction( t, function AbilityCast );
+    }
+}
+//! endzinc
+
+//! zinc
+library Ball
+{
+    private unit BALL = null;
+    
+    public
+    {
+        constant real Ball_DefaultHeight  = 10.0;
+        constant real Ball_MinimumSpeed   = 1.0;
+        
+        boolean Ball_IsInAir      = false;
+        integer Ball_ImmuneTimer  = 0;
+        real Ball_Direction       = 0.0;
+        real Ball_VZ              = 0.0;
+        real Ball_CurrentSpeed    = 0.0;
+        unit Ball_Owner           = null;
+    }
+    
+    public
+    {
+        function Ball_GetPlayerOwner() -> player {
+            return GetOwningPlayer(Ball_Owner);
+        }
+        function Ball_GetLoc() -> location {
+            return GetUnitLoc(BALL);
+        }
+        function Ball_SetLoc (location loc) {
+            SetUnitPositionLoc( BALL, loc );
+        }
+        function Ball_Move (location loc) {
+            IssuePointOrderLoc( BALL, "move", loc );
+        }
+        function Ball_GetHeight() -> real {
+            return GetUnitFlyHeight(BALL);
+        }
+        function Ball_SetHeight(real h) {
+            SetUnitFlyHeight( BALL, h, 0.0 );
+        }
+        function Ball_ResetHeight() {
+            Ball_SetHeight(Ball_DefaultHeight);
+        }
+        function Ball_GetSpeed() -> real {
+            return GetUnitMoveSpeed(BALL);
+        }
+        function Ball_SetSpeed(real speed) {
+            speed = RMinBJ(speed,522);
+            SetUnitMoveSpeed(BALL, speed);
+            Ball_CurrentSpeed = speed;
+        }
+        function Ball_SetScale(real scale) {
+            SetUnitTimeScalePercent( BALL, scale );
+        }
+        function Ball_SetFacing(real facing) {
+            SetUnitFacing( BALL, facing );
+        }
+        function Ball_ReduceSpeedBy(real factor) {
+            Ball_CurrentSpeed = RMaxBJ( Ball_MinimumSpeed, Ball_CurrentSpeed - factor );
+            Ball_SetSpeed( Ball_CurrentSpeed );
+        }
+        function Ball_Stop() {
+            IssueImmediateOrder(BALL, "stop");
+        }
+        function Ball_Land() {
+            Ball_ResetHeight(  );
+            Ball_VZ = 0;
+            Ball_IsInAir = false;
+        }
+    }
+    
+    function onInit() {
+        BALL = gg_unit_h000_0001;
+        Ball_SetLoc( GetRectCenter(gg_rct_Center) );
+    }
+}
+//! endzinc
+
+//! zinc
+library Flag requires Ball
+{
+    private unit FLAG = null;
+    
+    public
+    {
+        function Flag_SetPos(location pos) {
+            SetUnitPositionLoc(FLAG, pos);
+        }
+        function Flag_Hide() {
+            ShowUnit(FLAG, false);
+        }
+        function Flag_Show() {
+            ShowUnit(FLAG, true);
+        }
+    }
+    
+    public function Flag_Move() {
+        real h = Ball_GetHeight();
+        real v = Ball_GetSpeed();
+        real vz = Ball_VZ;
+        real dist;
+        
+        if ( v > Ball_MinimumSpeed ) {
+            dist = 0.1*v*(vz+SquareRoot(vz*vz+2*G*h))/G;
+            Flag_SetPos( PolarProjectionBJ( Ball_GetLoc(), dist, Ball_Direction) );
+        } else
+            Flag_SetPos( Ball_GetLoc() );
+    }
+    
+    function onInit() {
+        FLAG = gg_unit_h004_0007;
+        Flag_Hide();
+    }
+}
+//! endzinc
+
+//! zinc
+library Init requires Globals
+{
+    function onInit() {
+        force f = CreateForce();
+        
+        PolledWait(0.5);
+        
+        ClearMapMusic();
+        SetTimeOfDayScale( 0.0 );
+        SetTimeOfDay( 12.0 );
+        FogEnable( false );
+        FogMaskEnable( false );
+        
+        ForceEnumPlayers(f, Condition(function FilterPlayerStatePlaying));
+        ForForce( f, function() {
+            hero h = hero.create();
+            h.init(GetEnumPlayer());
+        });
+    }
+}
+//! endzinc
