@@ -1,58 +1,111 @@
-globals
-    group array TeamHeroes
-    hero array Heroes
-endglobals
-
 //! zinc
 library Globals
 {
-    public
+    public Hero Heroes[];
+    public group TeamHeroes[];
+    
+    public constant real G      = 2.3;
+    
+    public struct Hero
     {
-        constant real G             = 2.3;
+        private unit h          = null;
+        private player p        = null;
         
-        struct hero
-        {
-            private unit h          = null;
-            
-            boolean IsInAir         = false;
-            integer SlowDownTime    = 0;
-            integer CantHoldBall    = 0;
-            real Vz                 = 0.0;
-            
-            static integer Tallness = 100;
-            
-            method gethandle() -> unit {
-                return this.h;
-            }
-            // set fly height
-            method set_h(real h) {
-                SetUnitFlyHeight(this.h, h, 0.0);
-            }
-            // get fly height
-            method get_h() -> real {
-                return GetUnitFlyHeight(this.h);
-            }
-            method isowner() -> boolean {
-                return this.h == Ball.Owner;
-            }
-            method setspeed(real speed) {
-                SetUnitMoveSpeed(this.h, speed);
-            }
-            
-            static method create(player p) -> hero {
-                hero h = hero.allocate();
-                
-                integer pid = cPid(p);
-                location loc_player = GetRandomLocInRect(gg_rct_LeftTeamStay);
-                unit u = CreateUnitAtLoc( p, 'H001', loc_player, 0 );
-                SetHeroLevel( u, 10, false );
-                GroupAddUnit( TeamHeroes[1], u );
-                
-                h.h = u;
-                Heroes[pid] = h;
-                
-                return h;
-            }
+        boolean IsInAir         = false;
+        real Vz                 = 0.0;
+        timer SlowDownTimer     = null;
+        timer CantHoldBallTimer = null;
+        
+        static integer Tallness = 100;
+        
+        method getHandle() -> unit {
+            return this.h;
+        }
+        method getPlayer() -> player {
+            return this.p;
+        }
+        method setHeight(real h) {
+            SetUnitFlyHeight(this.h, h, 0.0);
+        }
+        method getHeight() -> real {
+            return GetUnitFlyHeight(this.h);
+        }
+        method isOwner() -> boolean {
+            return this == Ball.Owner;
+        }
+        method setSpeed(real speed) {
+            SetUnitMoveSpeed(this.h, speed);
+        }
+        method getLoc() -> location {
+            return GetUnitLoc(this.h);
+        }
+        method getFacing() -> real {
+            return GetUnitFacing(this.h);
+        }
+        method echo(string s) {
+            p_echo(this.p, s);
+        }
+        method disableInteraction(real time) {
+            DestroyTimer(this.CantHoldBallTimer);
+            this.CantHoldBallTimer = CreateTimer();
+            TimerStart(this.CantHoldBallTimer, time, false, function Hero.enableInteraction);
+        }
+        static method enableInteraction() {
+            Hero h = Hero.getByExpiredTimer();
+            DestroyTimer(h.CantHoldBallTimer);
+            h.CantHoldBallTimer = null;
+        }
+        method slowDown(real time) {
+            this.setSpeed(0.5*290);
+            DestroyTimer(this.SlowDownTimer);
+            this.SlowDownTimer = CreateTimer();
+            TimerStart(this.SlowDownTimer, time, false, function Hero.StopSlowDown);
+        }
+        static method StopSlowDown() {
+            Hero h = Hero.getByExpiredTimer();
+            DestroyTimer(h.SlowDownTimer);
+            h.SlowDownTimer = null;
+            h.setSpeed(290);
+        }
+        method dispossess(real slowdowntime) {
+            this.setSpeed(290);
+            if (slowdowntime > 0)
+                this.slowDown(slowdowntime);
+            Ball.Owner = 0;
+        }
+        static method getByExpiredTimer() -> Hero {
+            timer t = GetExpiredTimer();
+            integer pid;
+            for (1 <= pid <= 12)
+                if (Heroes[pid].SlowDownTimer == t || Heroes[pid].CantHoldBallTimer == t)
+                    return Heroes[pid];
+            return 0;
+        }
+        static method create(player p) -> Hero {
+            Hero h = Hero.allocate();
+            location loc_player = GetRandomLocInRect(gg_rct_LeftTeamStay);
+            unit u = CreateUnitAtLoc( p, 'H001', loc_player, 0 );
+            SetHeroLevel( u, 10, false );
+            GroupAddUnit( TeamHeroes[1], u );
+            h.p = p;
+            h.h = u;
+            Heroes[cPid(p)] = h;
+            return h;
+        }
+    }
+    
+    unit FLAG = null;
+    
+    public struct Flag
+    {
+        static method setLoc(location loc) {
+            SetUnitPositionLoc(FLAG, loc);
+        }
+        static method hide() {
+            ShowUnit(FLAG, false);
+        }
+        static method show() {
+            ShowUnit(FLAG, true);
         }
     }
     
@@ -60,26 +113,9 @@ library Globals
     {
         TeamHeroes[1] = CreateGroup();
         TeamHeroes[2] = CreateGroup();
-    }
-}
-
-library Init
-{
-    function onInit() {
-        force f;
         
-        PolledWait(0.5);
-        
-        ClearMapMusic();
-        SetTimeOfDayScale( 0.0 );
-        SetTimeOfDay( 12.0 );
-        FogEnable( false );
-        FogMaskEnable( false );
-        
-        f = GetPlayersMatching(Condition(function FilterPlayerStatePlaying));
-        ForForce( f, function() {
-            hero h = hero.create(GetEnumPlayer());
-        });
+        FLAG = gg_unit_h004_0007;
+        Flag.hide();
     }
 }
 
@@ -92,7 +128,10 @@ library Common
         }
         function IsFilterUnitHero() -> boolean {
             integer pid = cPid(GetOwningPlayer(GetFilterUnit()));
-            return GetFilterUnit() == Heroes[pid].gethandle();
+            if (Heroes[pid] == 0)
+                return false;
+            else
+                return GetFilterUnit() == Heroes[pid].getHandle();
         }
         function FilterPlayerStatePlaying() -> boolean {
             return GetPlayerSlotState(GetFilterPlayer()) == PLAYER_SLOT_STATE_PLAYING;
@@ -103,67 +142,61 @@ library Common
         function p_echo(player p, string s) {
             DisplayTextToPlayer(p,0,0,s);
         }
-        function GetHero(unit u) -> hero {
+        function GetHero(unit u) -> Hero {
             player p = GetOwningPlayer(u);
             return Heroes[cPid(p)];
         }
     }
 }
 
-library StdLib requires Common
+library Init requires StdLib
 {
+    function onInit() {
+        
+        ClearMapMusic();
+        SetTimeOfDayScale( 0.0 );
+        SetTimeOfDay( 12.0 );
+        FogEnable( false );
+        FogMaskEnable( false );
+        
+        ForForce( GetPlayersMatching(Condition(function FilterPlayerStatePlaying)), function() {
+            Hero.create(GetEnumPlayer());
+        });
+    }
 }
 
-library Flag
+library StdLib requires Globals, Common, BallLib
 {
-    private unit FLAG = null;
-    
-    public
-    {
-        function Flag_SetPos(location pos) {
-            SetUnitPositionLoc(FLAG, pos);
-        }
-        function Flag_Hide() {
-            ShowUnit(FLAG, false);
-        }
-        function Flag_Show() {
-            ShowUnit(FLAG, true);
-        }
-    }
-    
-    function onInit() {
-        FLAG = gg_unit_h004_0007;
-        Flag_Hide();
-    }
 }
 //! endzinc
 
 //! zinc
-library Core requires Flag
+library Core requires StdLib
 {
-    private boolean Interval_001_Execution = false;
-    
-    constant real GROUND_HIT_FACTOR         = 50;
-    constant real GROUND_FRICTION_FACTOR    = 10;
+    constant real GROUND_HIT_SLOWDOWN       = 50;
+    constant real GROUND_FRICTION_SLOWDOWN  = 10;
     
     function Get_Ball() {
-        player p = Ball.GetPlayerOwner();
-        integer pid = cPid(p);
+        Hero h;
         
-        if ( Ball.Owner != null ) {
-            p_echo( p, "TRIGSTR_298" );
-            Heroes[pid].CantHoldBall = 15;
+        if ( Ball.Owner != 0 ) {
+            h = Ball.Owner;
+            h.dispossess(0);
+            h.disableInteraction(1.4);
+            h.echo("TRIGSTR_298");
         }
         
-        Ball.Owner = GetEnumUnit();
-        p_echo( Ball.GetPlayerOwner(), "TRIGSTR_295" );
+        h = GetHero(GetEnumUnit());
+        Ball.Owner = h;
+        h.setSpeed(200);
+        h.echo("TRIGSTR_295");
         
-        Ball.ReduceSpeedBy(1000);
-        Ball.SetScale(350);
+        Ball.setSpeed(0);
+        Ball.setScale(350);
     }
 
     function CanUnitHeadBall(unit u) -> boolean {
-        hero h = GetHero(u);
+        Hero h = GetHero(u);
         
         boolean b1 = h.IsInAir;
         boolean b2 = h.Vz >= 0;
@@ -172,173 +205,138 @@ library Core requires Flag
     }
 
     function CanUnitGetBall(unit u) -> boolean {
-        hero h = GetHero(u);
+        Hero h = GetHero(u);
         
-        real ball_h = Ball.GetHeight();
-        real unit_h = h.get_h();
+        real ball_h = Ball.getHeight();
+        real unit_h = h.getHeight();
         
-        boolean b1 = Ball.CantInteractTime <= 0;
-        boolean b2 = h.CantHoldBall <= 0;
-        boolean b3 = !h.isowner();
-        boolean b4 = (ball_h >= unit_h) && (ball_h <= unit_h + hero.Tallness);
-        boolean b5 = IsUnitEnemy(u, Ball.GetPlayerOwner());
+        boolean b1 = Ball.CantInteractTimer == null;
+        boolean b2 = h.CantHoldBallTimer == null;
+        boolean b3 = !h.isOwner();
+        boolean b4 = (ball_h >= unit_h) && (ball_h <= unit_h + Hero.Tallness);
+        boolean b5 = IsUnitEnemy(u, Ball.getOwner());
         
         return b1 && b2 && b3 && b4 && b5;
     }
-
-    function Set_Ball_Owner() {
-        conditionfunc cond = Condition(function IsFilterUnitHero);
-        group g = GetUnitsInRangeOfLocMatching(100, Ball.GetLoc(), cond);
-        
-        ForGroup( g, function() {
-            unit u = GetEnumUnit();
-            hero h = GetHero(u);
-
-            if (CanUnitGetBall(u)) {
-                if (!CanUnitHeadBall(u)) {
-                    Flag_Hide();
-                    if (!Interval_001_Execution && h.SlowDownTime == 0)
-                        Get_Ball();
-                }
-            }
-        });
-    }
     
     function Flag_Move() {
-        real h = Ball.GetHeight();
-        real v = Ball.GetSpeed();
+        real h = Ball.getHeight();
+        real v = Ball.getSpeed();
         real Vz = Ball.Vz;
         real dist;
         
         if ( v > Ball.MinimumSpeed ) {
             dist = 0.1*v*(Vz+SquareRoot(Vz*Vz+2*G*h))/G;
-            Flag_SetPos( PolarProjectionBJ( Ball.GetLoc(), dist, Ball.Direction) );
+            Flag.setLoc( PolarProjectionBJ( Ball.getLoc(), dist, Ball.Direction) );
         } else
-            Flag_SetPos( Ball.GetLoc() );
-    }
-    
-    function Vertical_Animations() {
-        boolean b1 = Ball.Vz < 0;
-        boolean b2 = Ball.GetHeight() <= Ball.DefaultHeight;
-        
-        //Ball_HitsGround()
-        if ( b1 && b2 ) {
-            //BallHitsGround_Actions()
-            Ball.ReduceSpeedBy(GROUND_HIT_FACTOR);
-            Ball.ResetHeight();
-            
-            if ( RAbsBJ(Ball.Vz) < G*5.0 ) {
-                Flag_Hide();
-                Ball.IsInAir = false;
-                Ball.Vz = 0;
-            } else
-                Ball.Vz *= (-0.6);
-        } else {
-            // Ball.UpdateHeight()
-            Ball.SetHeight( Ball.GetHeight() + Ball.Vz );
-            Ball.Vz -= G;
-        }
-        
-        Flag_Move();
-    }
-    
-    public function Horizontal_Animations() {
-        location loc_ball_new = PolarProjectionBJ( Ball.GetLoc(), 100, Ball.Direction);
-
-        if ( Ball.GetSpeed() <= Ball.MinimumSpeed ) {
-            Ball.Stop();
-            Ball.ReduceSpeedBy( 1000 );
-            Ball.SetScale( 0 );
-        } else {
-            Ball.SetScale( 1.5 * Ball.GetSpeed() );
-            Ball.Move(loc_ball_new);
-        }
-    }
-    
-    function Ball_PlaceInFrontOfOwner() {
-        location loc_owner = GetUnitLoc(Ball.Owner);
-        real facing = GetUnitFacing(Ball.Owner);
-        location loc_ball_new = PolarProjectionBJ( loc_owner, 50, facing);
-        
-        Ball.SetLoc( loc_ball_new );
-        Ball.SetFacing( facing );
-        Ball.SetHeight( GetUnitFlyHeight(Ball.Owner) + Ball.DefaultHeight );
-    }
-    
-    function Ball_Periodic_Actions() {
-        if ( Ball.Owner == null ) {
-            Horizontal_Animations();
-            
-            if ( Ball.IsInAir )
-                Vertical_Animations();
-            else
-                Ball.ReduceSpeedBy(GROUND_FRICTION_FACTOR);
-        } else
-            Ball_PlaceInFrontOfOwner();
+            Flag.setLoc( Ball.getLoc() );
     }
 
     function Jump_Periodic_Actions() {
-        group g = CreateGroup();
-        GroupAddGroup(TeamHeroes[1], g);
-        GroupAddGroup(TeamHeroes[2], g);
-        
+        group g = GetUnitsInRectMatching(GetPlayableMapRect(), Condition(function IsFilterUnitHero));
         ForGroup(g, function() {
-            hero h = GetHero(GetEnumUnit());
+            Hero h = GetHero(GetEnumUnit());
             
             if ( h.IsInAir ) {
-                h.set_h( h.get_h() + h.Vz );
+                h.setHeight( h.getHeight() + h.Vz );
                 h.Vz -= G;
                 
-                if ( h.get_h() <= 0.01 ) {
+                if ( h.getHeight() <= 0.01 ) {
                     h.IsInAir = false;
-                    h.set_h(0);
+                    h.setHeight(0);
                     h.Vz = 0;
                 }
             }
         });
     }
     
-    public function Players_Update_Speed() {
-        conditionfunc cond = Condition(function IsFilterUnitHero);
-        group g = GetUnitsInRectMatching(GetPlayableMapRect(), cond);
-        ForGroup( g, function() { 
-            hero h = GetHero(GetEnumUnit());
-            
-            if (h.SlowDownTime == 0) {
-                if (h.isowner())
-                    h.setspeed(200);
-                else
-                    h.setspeed(290);
-            } else {
-                h.SlowDownTime -= 1;
-                h.setspeed(0.5*290);
-            }
-        } );
+    function Ball_PlaceInFrontOfOwner() {
+        location loc_owner = Ball.Owner.getLoc();
+        real facing = Ball.Owner.getFacing();
+        location loc_ball_new = PolarProjectionBJ( loc_owner, 50, facing);
+        
+        Ball.setLoc( loc_ball_new );
+        Ball.setFacing( facing );
+        Ball.setHeight( Ball.Owner.getHeight() + Ball.DefaultHeight );
     }
     
-    function Players_Update_CantHoldBall_Value() {
-        conditionfunc cond = Condition(function FilterPlayerStatePlaying);
-        force f = GetPlayersMatching(cond);
-        ForForce( f, function() {
-            integer pid = cPid(GetEnumPlayer());
-            hero h = Heroes[pid];
-            h.CantHoldBall = IMaxBJ(0, h.CantHoldBall-1);
+    public function Horizontal_Animations() {
+        location loc_ball_new = PolarProjectionBJ( Ball.getLoc(), 100, Ball.Direction);
+
+        if ( Ball.getSpeed() <= Ball.MinimumSpeed ) {
+            Ball.stop();
+            Ball.setSpeed(0);
+            Ball.setScale(0);
+        } else {
+            Ball.setScale( 1.5 * Ball.getSpeed() );
+            Ball.move(loc_ball_new);
+        }
+    }
+    
+    function Vertical_Animations() {
+        boolean b1 = Ball.Vz < 0;
+        boolean b2 = Ball.getHeight() <= Ball.DefaultHeight;
+        
+        //if Ball_HitsGround()
+        if ( b1 && b2 ) {
+            Ball.setSpeed(Ball.getSpeed() - GROUND_HIT_SLOWDOWN);
+            Ball.resetHeight();
+            
+            if ( RAbsBJ(Ball.Vz) < G*5.0 ) {
+                Flag.hide();
+                Ball.IsInAir = false;
+                Ball.Vz = 0;
+            } else
+                Ball.Vz *= (-0.6);
+        } else {
+            // Ball.UpdateHeight()
+            Ball.setHeight( Ball.getHeight() + Ball.Vz );
+            Ball.Vz -= G;
+        }
+        
+        Flag_Move();
+    }
+    
+    function Set_Ball_Owner() {
+        group g = GetUnitsInRangeOfLocMatching(100, Ball.getLoc(), Condition(function IsFilterUnitHero));
+        ForGroup( g, function() {
+            unit u = GetEnumUnit();
+            Hero h = GetHero(u);
+
+            if (CanUnitGetBall(u)) {
+                if (!CanUnitHeadBall(u)) {
+                    Flag.hide();
+                    if (!Per_001_Execution && h.SlowDownTimer == null)
+                        Get_Ball();
+                }
+            }
         });
+    }
+    
+    function Ball_Periodic_Actions() {
+        if ( Ball.Owner == 0 ) {
+            Horizontal_Animations();
+            
+            if ( Ball.IsInAir )
+                Vertical_Animations();
+            else
+                Ball.setSpeed(Ball.getSpeed() - GROUND_FRICTION_SLOWDOWN);
+        } else
+            Ball_PlaceInFrontOfOwner();
     }
     
     function Periodic_10() {
         Ball_Periodic_Actions();
-        Players_Update_CantHoldBall_Value();
         Set_Ball_Owner();
-        Ball.CantInteractTime = IMaxBJ(0, Ball.CantInteractTime-1);
-        Players_Update_Speed();
         Jump_Periodic_Actions();
     }
     
+    boolean Per_001_Execution = false;
+    
     function Periodic_100() {
-        Interval_001_Execution = true;
+        Per_001_Execution = true;
         Set_Ball_Owner();
-        Interval_001_Execution = false;
+        Per_001_Execution = false;
     }
     
     function onInit() {
@@ -362,46 +360,47 @@ library Abils requires Core
     constant integer ABILITY_LONG_PASS      = 'A008';
     constant integer ABILITY_JUMP           = 'A009';
     
+    constant real CANT_HOLD_BALL_TIME       = 0.9;
+    
     function Shot_Common_Actions() {
-        integer pid = cPid(Ball.GetPlayerOwner());
-        
-        Heroes[pid].CantHoldBall = 10;
-        Ball.CantInteractTime = 7;
-        Ball.Owner = null;
-        Players_Update_Speed();
+        Ball.disableInteraction(0.7);
         Horizontal_Animations();
     }
     
     function Z_Actions() {
-        hero h = GetHero(GetTriggerUnit());
+        Hero h = GetHero(GetTriggerUnit());
         
-        if ( !h.isowner() )
+        if ( !h.isOwner() )
             return;
         
         if (h.IsInAir) {
             // V+Z
             Ball.Vz = 0;
             Ball.IsInAir = true;
-            Ball.Direction = GetUnitFacing(Ball.Owner);
-            Ball.SetSpeed(522);
+            Ball.Direction = Ball.Owner.getFacing();
+            Ball.setSpeed(522);
+            h.dispossess(0);
+            h.disableInteraction(CANT_HOLD_BALL_TIME);
         }
         
         Shot_Common_Actions();
     }
     
     function X_Actions() {
+        Hero h = GetHero(GetTriggerUnit());
         unit u = GetTriggerUnit();
         location loc_target = GetSpellTargetLoc();
         
-        if ( Ball.Owner == u ) {
+        if ( Ball.Owner == h ) {
             Ball.Vz = 20;
             Ball.IsInAir = true;
-            Ball.Direction = AngleBetweenPoints( Ball.GetLoc(), loc_target );
-            Ball.SetSpeed(362);
+            Ball.Direction = AngleBetweenPoints( Ball.getLoc(), loc_target );
+            Ball.setSpeed(362);
+            h.dispossess(0);
+            h.disableInteraction(CANT_HOLD_BALL_TIME);
             
             Shot_Common_Actions();
-            
-            Flag_Show();
+            Flag.show();
         }
         
         IssueImmediateOrder(u, "stop");
@@ -409,37 +408,37 @@ library Abils requires Core
     }
     
     function C_Actions() {
-        hero h = GetHero(GetTriggerUnit());
+        Hero h = GetHero(GetTriggerUnit());
         location loc_target = GetSpellTargetLoc();
         real dist, speed;
         
-        if ( h.IsInAir || !h.isowner() )
+        if ( h.IsInAir || !h.isOwner() )
             return;
         
-        h.SlowDownTime = 10;
-        
-        Ball.ResetHeight();
+        Ball.resetHeight();
         Ball.Vz = 30;
         Ball.IsInAir = true;
-        Ball.Direction = AngleBetweenPoints( Ball.GetLoc(), loc_target );
+        Ball.Direction = AngleBetweenPoints( Ball.getLoc(), loc_target );
         
-        dist = DistanceBetweenPoints( Ball.GetLoc(), loc_target );
+        dist = DistanceBetweenPoints( Ball.getLoc(), loc_target );
         speed = 10 * G * dist * 0.5 / Ball.Vz;
-        Ball.SetSpeed(speed);
+        Ball.setSpeed(speed);
+        
+        h.dispossess(1.0);
+        h.disableInteraction(CANT_HOLD_BALL_TIME);
         
         Shot_Common_Actions();
-        
-        Flag_Show();
+        Flag.show();
     }
     
     function V_Actions() {
-        hero h = GetHero(GetTriggerUnit());
+        Hero h = GetHero(GetTriggerUnit());
         
-        if (h.IsInAir || h.SlowDownTime > 0)
+        if (h.IsInAir || h.SlowDownTimer != null)
             return;
         
         h.IsInAir = true;
-        if ( !h.isowner() )
+        if ( !h.isOwner() )
             h.Vz = 20;
         else
             h.Vz = 15;
@@ -469,72 +468,71 @@ library Abils requires Core
 //! zinc
 library BallLib
 {
-    public Ball__class Ball;
-    
     private unit BALL = null;
     
-    struct Ball__class
+    public struct Ball
     {
         static real DefaultHeight  = 12.0;
         static real MinimumSpeed   = 1.0;
         
-        boolean IsInAir      = false;
-        integer CantInteractTime = 0; // ImmuneTimer
-        real Direction       = 0.0;
-        real Vz              = 0.0;
-        unit Owner           = null;
+        static boolean IsInAir      = false;
+        static real Direction       = 0.0;
+        static real Vz              = 0.0;
+        static Hero Owner           = 0;
+        static timer CantInteractTimer = null;
         
-        method GetPlayerOwner() -> player {
-            return GetOwningPlayer( this.Owner );
-        }
-        method GetLoc() -> location {
+        static method getLoc() -> location {
             return GetUnitLoc( BALL );
         }
-        method SetLoc(location loc) {
+        static method setLoc(location loc) {
             SetUnitPositionLoc( BALL, loc );
         }
-        method Move(location loc) {
+        static method move(location loc) {
             IssuePointOrderLoc( BALL, "move", loc );
         }
-        method GetHeight() -> real {
+        static method getHeight() -> real {
             return GetUnitFlyHeight(BALL);
         }
-        method SetHeight(real h) {
+        static method setHeight(real h) {
             SetUnitFlyHeight( BALL, h, 0.0 );
         }
-        method ResetHeight() {
-            this.SetHeight(this.DefaultHeight);
-        }
-        method GetSpeed() -> real {
+        static method getSpeed() -> real {
             return GetUnitMoveSpeed(BALL);
         }
-        method SetSpeed(real speed) {
-            speed = RMinBJ(speed, 522);
-            SetUnitMoveSpeed(BALL, speed);
+        static method setSpeed(real speed) {
+            SetUnitMoveSpeed(BALL, RMaxBJ(Ball.MinimumSpeed, RMinBJ(speed, 522)));
         }
-        method SetScale(real scale) {
+        static method setScale(real scale) {
             SetUnitTimeScalePercent( BALL, scale );
         }
-        method SetFacing(real facing) {
+        static method setFacing(real facing) {
             SetUnitFacing( BALL, facing );
         }
-        method ReduceSpeedBy(real factor) {
-            this.SetSpeed( RMaxBJ( this.MinimumSpeed, this.GetSpeed() - factor ) );
-        }
-        method Stop() {
+        static method stop() {
             IssueImmediateOrder(BALL, "stop");
         }
-        method Land() {
-            this.ResetHeight(  );
-            this.Vz = 0;
-            this.IsInAir = false;
+        static method resetHeight() {
+            Ball.setHeight(Ball.DefaultHeight);
+        }
+        static method getOwner() -> player {
+            if (Ball.Owner != 0)
+                return GetOwningPlayer( Ball.Owner.getHandle() );
+            return null;
+        }
+        static method enableInteraction() {
+            DestroyTimer(Ball.CantInteractTimer);
+            Ball.CantInteractTimer = null;
+        }
+        static method disableInteraction(real time) {
+            DestroyTimer(CantInteractTimer);
+            CantInteractTimer = CreateTimer();
+            TimerStart(CantInteractTimer, time, false, function Ball.enableInteraction);
         }
     }
     
     function onInit() {
-        Ball = Ball__class.create();
         BALL = gg_unit_h000_0001;
-        Ball.SetLoc( GetRectCenter(gg_rct_Center) );
+        Ball.setLoc( GetRectCenter(gg_rct_Center) );
     }
 }
 //! endzinc
